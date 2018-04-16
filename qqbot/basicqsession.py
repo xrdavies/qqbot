@@ -11,9 +11,18 @@ from qqbot.qrcodemanager import QrcodeManager
 from qqbot.utf8logger import CRITICAL, ERROR, WARN, INFO, DEBUG
 from qqbot.utf8logger import DisableLog, EnableLog
 from qqbot.common import PY3, Partition, JsonLoads, JsonDumps
-from qqbot.qcontactdb import QContact
 from qqbot.facemap import FaceParse, FaceReverseParse
 from qqbot.mainloop import Put
+
+def disableInsecureRequestWarning():
+    try:
+        try:
+            urllib3 = requests.packages.urllib3
+        except AttributeError:
+            import urllib3    
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception as e:
+        ERROR('无法禁用 InsecureRequestWarning ，原因：%s', e)
 
 class RequestError(Exception):
     pass
@@ -96,7 +105,10 @@ class BasicQSession(object):
                     self.nick = str(items[-1].split("'")[1])
                     self.qq = str(int(self.session.cookies['superuin'][1:]))
                     self.urlPtwebqq = items[2].strip().strip("'")
-                    conf.qq = self.qq
+                    t = time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime(time.time()))
+                    self.dbbasename = '%s-%s-contact.db' % (t, self.qq)
+                    self.dbname = conf.absPath(self.dbbasename)
+                    conf.SetQQ(self.qq)
                     break
                 else:
                     CRITICAL('获取二维码扫描状态时出错, html="%s"', authStatus)
@@ -160,6 +172,8 @@ class BasicQSession(object):
         INFO('已获取uin和psessionid')
 
     def TestLogin(self):
+        if not self.session.verify:
+            disableInsecureRequestWarning()
         try:
             DisableLog()
             # 请求一下 get_online_buddies 页面，避免103错误。
@@ -179,33 +193,52 @@ class BasicQSession(object):
         INFO('登录成功。登录账号：%s(%s)', self.nick, self.qq)
 
     def Poll(self):
-        result = self.smartRequest(
-            url = 'https://d1.web2.qq.com/channel/poll2',
-            data = {
-                'r': JsonDumps({
-                    'ptwebqq':self.ptwebqq, 'clientid':self.clientid,
-                    'psessionid':self.psessionid, 'key':''
-                })
-            },
-            Referer = ('http://d1.web2.qq.com/proxy.html?v=20151105001&'
-                       'callback=1&id=2')
-        )
-
-        if not result or 'errmsg' in result:
-            return 'timeout', '', '', ''
+        try:
+            result = self.smartRequest(
+                url = 'https://d1.web2.qq.com/channel/poll2',
+                data = {
+                    'r': JsonDumps({
+                        'ptwebqq':self.ptwebqq, 'clientid':self.clientid,
+                        'psessionid':self.psessionid, 'key':''
+                    })
+                },
+                Referer = ('http://d1.web2.qq.com/proxy.html?v=20151105001&'
+                           'callback=1&id=2'),
+                expectedCodes = (0, 100003, 100100, 100012)
+            )
+            # "{'retcode': 0, 'retmsg': 'ok', 'errmsg': 'error'}"
+            if type(result) is dict and \
+                    result.get('retcode', 1) == 0 and \
+                    result.get('errmsg', '') == 'error':
+                DEBUG(result)
+                raise RequestError
+        except RequestError:
+            ERROR('接收消息出错，开始测试登录 cookie 是否过期...')
+            try:
+                self.TestLogin()
+            except RequestError:
+                ERROR('登录 cookie 很可能已过期')
+                raise
+            else:
+                INFO('登录 cookie 尚未过期')
+                return 'timeout', '', '', ''
         else:
-            result = result[0]
-            ctype = {
-                'message': 'buddy',
-                'group_message': 'group',
-                'discu_message': 'discuss'
-            }[result['poll_type']]
-            fromUin = str(result['value']['from_uin'])
-            memberUin = str(result['value'].get('send_uin', ''))
-            content = FaceReverseParse(result['value']['content'])
-            return ctype, fromUin, memberUin, content
+            if (not result) or (not isinstance(result, list)):
+                DEBUG(result)
+                return 'timeout', '', '', ''
+            else:
+                result = result[0]
+                ctype = {
+                    'message': 'buddy',
+                    'group_message': 'group',
+                    'discu_message': 'discuss'
+                }[result['poll_type']]
+                fromUin = str(result['value']['from_uin'])
+                memberUin = str(result['value'].get('send_uin', ''))
+                content = FaceReverseParse(result['value']['content'])
+                return ctype, fromUin, memberUin, content
 
-    def send(self, ctype, uin, content):
+    def send(self, ctype, uin, content, epCodes=[0]):
         self.msgId += 1
         sendUrl = {
             'buddy': 'http://d1.web2.qq.com/channel/send_buddy_msg2',
@@ -231,13 +264,13 @@ class BasicQSession(object):
             },
             Referer = ('http://d1.web2.qq.com/proxy.html?v=20151105001&'
                        'callback=1&id=2'),
-            repeatOnDeny=5
+            expectedCodes = epCodes
         )
     
-    def SendTo(self, contact, content):
+    def SendTo(self, contact, content, resendOn1202=True):
         result = None
 
-        if not isinstance(contact, QContact):
+        if not hasattr(contact, 'ctype'):
             result = '错误：消息接受者必须为一个 QContact 对象'
         
         if contact.ctype.endswith('-member'):
@@ -264,12 +297,14 @@ class BasicQSession(object):
         if result:
             ERROR(result)
             return result
+        
+        epCodes = resendOn1202 and [0] or [0, 1202]
 
         result = '向 %s 发消息成功' % contact
         while content:
-            front, content = Partition(content, 600)
+            front, content = Partition(content)
             try:
-                self.send(contact.ctype, contact.uin, front)
+                self.send(contact.ctype, contact.uin, front, epCodes)
             except Exception as e:
                 result = '错误：向 %s 发消息失败 %s' % (str(contact), e)
                 ERROR(result, exc_info=(not isinstance(e, RequestError)))
@@ -293,19 +328,16 @@ class BasicQSession(object):
             if self.session.verify:
                 time.sleep(5)
                 ERROR('无法和腾讯服务器建立私密连接，'
-                      ' 15 秒后将尝试使用非私密连接和腾讯服务器通讯。'
+                      ' 5 秒后将尝试使用非私密连接和腾讯服务器通讯。'
                       '若您不希望使用非私密连接，请按 Ctrl+C 退出本程序。')
                 try:
-                    time.sleep(15)
+                    time.sleep(5)
                 except KeyboardInterrupt:
                     Put(sys.exit, 0)
                     sys.exit(0)
                 WARN('开始尝试使用非私密连接和腾讯服务器通讯。')
                 self.session.verify = False
-                requests.packages.urllib3.disable_warnings(
-                    requests.packages.urllib3.exceptions.
-                    InsecureRequestWarning
-                )
+                disableInsecureRequestWarning()
                 return self.urlGet(url, data, Referer, Origin)
             else:
                 raise
@@ -325,7 +357,7 @@ class BasicQSession(object):
                 nCE += 1
                 errorInfo = '网络错误 %s' % e
             else:
-                html = resp.content if not PY3 else resp.content.decode('utf8')
+                html = resp.content if not PY3 else resp.content.decode('utf8')                    
                 if resp.status_code in (502, 504, 404):
                     self.session.get(
                         ('http://pinghot.qq.com/pingd?dm=w.qq.com.hot&'
@@ -378,8 +410,8 @@ class BasicQSession(object):
             elif nTO == 20 and timeoutRetVal: # by @killerhack
                 return timeoutRetVal
             else:
-                ERROR('第%d次请求“%s”时出现 %s',n,url.split('?',1)[0],errorInfo)
-                DEBUG('html=%s', repr(html))
+                ERROR('第%d次请求“%s”时出现 %s, html=%s',
+                      n, url.split('?', 1)[0], errorInfo, repr(html))
                 raise RequestError
 
 def qHash(x, K):

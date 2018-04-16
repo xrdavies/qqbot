@@ -8,7 +8,7 @@ if p not in sys.path:
 import os, platform, uuid, subprocess, time
 
 from qqbot.utf8logger import WARN, INFO, DEBUG, ERROR
-from qqbot.common import StartDaemonThread, LockedValue, HasCommand, PY3
+from qqbot.common import StartDaemonThread, LockedValue, HasCommand, SYSTEMSTR2STR
 from qqbot.qrcodeserver import QrcodeServer
 from qqbot.mailagent import MailAgent
 
@@ -22,9 +22,10 @@ class QrcodeManager(object):
             self.qrcodeServer = QrcodeServer(
                 conf.httpServerIP,
                 conf.httpServerPort,
-                os.path.dirname(self.qrcodePath)
+                self.qrcodePath,
+                qrcodeId
             )
-            self.qrcodeURL = self.qrcodeServer.qrcodeURL
+            StartDaemonThread(self.qrcodeServer.Run)
         else:
             self.qrcodeServer = None        
 
@@ -37,12 +38,14 @@ class QrcodeManager(object):
                 html = ('<p>您的 QQBot 正在登录，请尽快用手机 QQ 扫描下面的二维码。'
                         '若二维码已过期，请重新打开本邮件。若您看不到二维码图片，请确保'
                         '图片地址 <a href="{0}">{0}</a> 可以通过公网访问。</p>'
-                        '<p><img src="{0}"></p>').format(self.qrcodeURL)
+                        '<p><img src="{0}"></p>').format(self.qrcodeServer.qrcodeURL)
             else:
                 html = ('<p>您的 QQBot 正在登录，请尽快用手机 QQ 扫描下面的二维码。'
                         '若二维码已过期，请将本邮件设为已读邮件，之后 QQBot 会在'
                         '1~2分钟内将最新的二维码发送到本邮箱。</p>'
                         '<p>{{png}}</p>')
+            
+            html += '<p>conf.user=%r, conf.qq=%r</p>' % (conf.user, conf.qq)
 
             self.qrcodeMail = {
                 'to_addr': conf.mailAccount,
@@ -62,30 +65,35 @@ class QrcodeManager(object):
             global Image
             try:
                 from PIL import Image as i
+                import wcwidth
                 Image = i
             except ImportError:
-                ERROR('需要安装 pillow 才能使用文本模式显示二维码')
+                ERROR('需要安装 pillow,wcwidth 才能使用文本模式显示二维码')
                 sys.exit(1)
     
     def Show(self, qrcode):
         with open(self.qrcodePath, 'wb') as f:
             f.write(qrcode)
+
+        from qqbot import _bot
+        if hasattr(_bot, 'onQrcode'):
+            _bot.onQrcode(self.qrcodePath, qrcode)
         
         if self.cmdQrcode:
             try:
                 showCmdQRCode(self.qrcodePath)
             except Exception as e:
                 WARN('无法以文本模式显示二维码图片 file://%s 。%s',
-                     self.qrcodePath, e)
+                     SYSTEMSTR2STR(self.qrcodePath), e)
         
         if not (self.qrcodeServer or self.mailAgent or self.cmdQrcode):
             try:
                 showImage(self.qrcodePath)
             except Exception as e:
-                WARN('无法弹出二维码图片 file://%s 。%s', self.qrcodePath, e)
+                WARN('无法弹出二维码图片 file://%s 。%s', SYSTEMSTR2STR(self.qrcodePath), e)
 
         if self.qrcodeServer:
-            INFO('请使用浏览器访问二维码，图片地址： %s', self.qrcodeURL)
+            INFO('请使用浏览器访问二维码，图片地址：%s', self.qrcodeServer.qrcodeURL)
         
         if self.mailAgent:
             if self.qrcode.getVal() is None:
@@ -107,7 +115,7 @@ class QrcodeManager(object):
                     with self.mailAgent.SMTP() as smtp:
                         smtp.send(png_content=qrcode, **self.qrcodeMail)
                 except Exception as e:
-                    WARN('无法将二维码发送至邮箱%s %s', self.mailAgent.account, e)
+                    WARN('无法将二维码发送至邮箱%s %s', self.mailAgent.account, e, exc_info=True)
                 else:
                     INFO('已将二维码发送至邮箱%s', self.mailAgent.account)
                     if self.qrcodeServer:
@@ -131,18 +139,18 @@ class QrcodeManager(object):
     def Destroy(self):
         if self.mailAgent:
             self.qrcode.setVal(None)
+        
+        if self.qrcodeServer:
+            self.qrcodeServer.Stop()
 
         try:
             os.remove(self.qrcodePath)
         except OSError:
             pass
 
-# py2: FILENAME must be an utf8 encoding string
 def showImage(filename):
     osName = platform.system()
     if osName == 'Windows':
-        if not PY3:
-            filename = filename.decode('utf8').encode('cp936')
         subprocess.Popen([filename], shell=True)
     elif osName == 'Linux':
         if HasCommand('gvfs-open'):
@@ -154,7 +162,7 @@ def showImage(filename):
     elif osName == 'Darwin': # by @Naville
         subprocess.Popen(['open', filename])
     else:
-        raise
+        raise Exception('other system')
 
 def showCmdQRCode(filename):
     global Image
@@ -191,9 +199,9 @@ def showCmdQRCode(filename):
     # currently for Windows, '\u2588' is not correct. So use 'MM' for windows.
     osName = platform.system()
     if osName == 'Windows':
-        white = 'MM'
+        white = '@@'
 
-    blockCount = 2/wcwidth.wcswidth(white)
+    blockCount = int(2/wcwidth.wcswidth(white))
     white *= abs(blockCount)
 
     sys.stdout.write(' '*50 + '\r')
@@ -202,6 +210,22 @@ def showCmdQRCode(filename):
     qr = '\033[37m\033[40m\n' + qr + '\033[0m\n' # force to use white/black.
     sys.stdout.write(qr)
     sys.stdout.flush()
+
+    # A space-saving text QRCode
+    if osName != 'Windows':
+        charlist = [u' ',      u'\u2598', u'\u259D', u'\u2580', u'\u2596', u'\u258C', u'\u259E', u'\u259B',
+                    u'\u2597', u'\u259A', u'\u2590', u'\u259C', u'\u2584', u'\u2599', u'\u259F', u'\u2588']
+        qrarray = map(lambda x: map(lambda y: y, x), qrtext.split('\n'))
+        qrtext = ''
+        for rr in range(0, size + padding * 2, 2):
+            for cc in range(0, size + padding * 2, 2):
+                index = int(''.join([x for row in qrarray[rr:rr+2] for x in (row + ['0'])[cc:cc+2]][::-1]), 2)
+                qrtext += hex(15 - index)[-1]
+            qrtext += '\n'
+        qr = ''.join(map(lambda x: charlist[int(x, 16)] if x != '\n' else x, qrtext))
+        qr = '\033[37m\033[40m\n' + qr + '\033[0m\n'  # force to use white/black.
+        sys.stdout.write(qr)
+        sys.stdout.flush()
 
 if __name__ == '__main__':
     from qconf import QConf

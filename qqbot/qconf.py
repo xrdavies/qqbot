@@ -5,9 +5,10 @@ p = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if p not in sys.path:
     sys.path.insert(0, p)
 
-version = 'v2.1.12'
+version = 'v2.3.10'
 
-sampleConfStr = '''{
+sampleConfStr = '''
+{
 
     # QQBot 的配置文件
     # 使用 qqbot -u somebody 启动程序时，依次加载：
@@ -18,13 +19,14 @@ sampleConfStr = '''{
     # 用户 somebody 的配置
     "somebody" : {
         
-        # QQBot-term 服务器端口号
+        # QQBot-term （HTTP-API） 服务器端口号（该服务器监听 IP 为 127.0.0.1 ）
+        # 设置为 0 则不会开启本服务器（此时 qq 命令和 HTTP-API 接口都无法使用）。
         "termServerPort" : 8188,
         
-        # http 服务器 ip，请设置为公网 ip
-        "httpServerIP" : "127.0.0.1",
+        # 二维码 http 服务器 ip，请设置为公网 ip 或空字符串
+        "httpServerIP" : "",
         
-        # http 服务器端口号
+        # 二维码 http 服务器端口号
         "httpServerPort" : 8189,
         
         # 自动登录的 QQ 号
@@ -45,25 +47,20 @@ sampleConfStr = '''{
         # QQBot 掉线后自动重启
         "restartOnOffline" : False,
         
-        # 完成一轮联系人列表刷新后的间歇时间
-        "fetchInterval" : 120,
+        # 在后台运行 qqbot ( daemon 模式)
+        "daemon": False,
         
         # 完成全部联系人列表获取之后才启动 QQBot 
         "startAfterFetch" : False,
-        
-        # 需要被特别监视的联系人列表
-        # 'buddy'/'group'/'discuss' 表示需要特别监视：
-        #     好友列表/群列表/讨论组列表 中的联系人变动事件
-        # 'group-member-456班'/'discuss-member-xx小组' 表示需要特别监视：
-        #     群”456班“成员列表/讨论组”xx小组“成员列表 中的联系人变动事件
-        # 若此项中的列表的数量较少，则被特别监视的列表中的联系人变动事件滞后时间可大幅缩短
-        "monitorTables" : ['buddy', 'group-member-456班'],
         
         # 插件目录
         "pluginPath" : ".",
         
         # 启动时需加载的插件
-        "plugins" : ['sample1'],
+        "plugins" : [],
+        
+        # 插件的配置（由用户自定义）
+        "pluginsConf" : {},
     
     },
     
@@ -71,7 +68,13 @@ sampleConfStr = '''{
     "默认配置" : {
         "qq" : "",
         "pluginPath" : "",
-        "plugins" : [],
+        "plugins" : [
+            'qqbot.plugins.sampleslots',
+            'qqbot.plugins.schedrestart',
+        ],
+	    "pluginsConf" : {
+	        'qqbot.plugins.schedrestart': '8:00',
+	    }
     },
     
     # # 注意：根配置是固定的，用户无法修改（在本文件中修改根配置不会生效）
@@ -85,11 +88,11 @@ sampleConfStr = '''{
     #     "cmdQrcode" : False,
     #     "debug" : False,
     #     "restartOnOffline" : False,
-    #     "fetchInterval" : 120, 
+    #     "daemon" : False,
     #     "startAfterFetch" : False,
-    #     "monitorTables" : [],
     #     "pluginPath" : "",
     #     "plugins" : [],
+    #     "pluginsConf" : {}
     # },
 
 }
@@ -105,11 +108,11 @@ rootConf = {
     "cmdQrcode" : False,
     "debug" : False,
     "restartOnOffline" : False,
-    "fetchInterval" : 120, 
+    "daemon" : False,
     "startAfterFetch" : False,
-    "monitorTables" : [],
     "pluginPath" : "",
     "plugins" : [],
+    "pluginsConf" : {},
 }
 
 if sys.argv[0].endswith('.py') or sys.argv[0].endswith('.pyc'):
@@ -127,9 +130,18 @@ QQBot 机器人
 
 选项:
   通用:
-    -h, --help              显示此帮助页面。
-    -d, --debug             启用调试模式。
-    -nd, --nodebug          停用调试模式。
+    -h, --help              显示此帮助页面
+    -d, --debug             启用调试模式
+    -nd, --nodebug          停用调试模式
+    -dm, --daemon           以 daemon 模式运行
+    -ndm, --nodaemon        不以 daemon 模式运行
+
+  工作目录：
+    -b BENCH, --bench BENCH 指定工作目录，默认为 “~/.qqbot-tmp/”
+                            qqbot 运行时将在工作目录下搜索配置文件（v2.x.conf），
+                            在工作目录以下的 plugins 目录中搜索插件；并将登录的
+                            pickle 文件、联系人 db 文件 以及 临时二维码图片保存在
+                            工作目录下。
 
   登陆:
     -u USER, --user USER    指定一个配置文件项目以导入设定。
@@ -143,15 +155,15 @@ QQBot 机器人
   QTerm本地控制台服务:
     -p TERMSERVERPORT, --termServerPort TERMSERVERPORT
                             更改QTerm控制台的监听端口到 TERMSERVERPORT 。
-                            默认的监听端口是 8189 (TCP)。
+                              默认的监听端口是 8188 (TCP)。
 
   HTTP二维码查看服务器设置:
   (请阅读说明文件以了解此HTTP服务器的详细信息。)
     -ip HTTPSERVERIP, --httpServerIP HTTPSERVERIP
                             指定HTTP服务要监听在哪个IP地址上。
-                            如需在所有网络接口上监听，请指定 "0.0.0.0" 。
     -hp HTTPSERVERPORT, --httpServerPort HTTPSERVERPORT
                             指定HTTP服务要监听在哪个端口上。
+                              默认的监听端口是 8189 (TCP)
 
   邮件(IMAP)发送二维码设置:
   (请阅读说明文件以了解如何通过邮件发送二维码，)
@@ -169,11 +181,7 @@ QQBot 机器人
 
   其他：
     -cq, --cmdQrcode        以文本模式显示二维码
-    -fi FETCHINTERVAL, --fetchInterval FETCHINTERVAL
-                            设置每轮联系人列表更新之间的间歇时间（单位：秒）。
     -saf, --startAfterFetch 全部联系人资料获取完成后再启动 QQBot
-    -mt MONITORTABLES, --monitorTables MONITORTABLES
-                            设置需要特别监视的列表，如： -mt buddy,group-member-456班
     -pp PLUGINPATH, --pluginPath PLUGINPATH
                             设置插件目录
     -pl PLUGINS, --plugins PLUGINS
@@ -181,32 +189,39 @@ QQBot 机器人
 
 版本:
   {VERSION}\
-'''.format(PROGNAME=progname, VERSION=version)
+'''.format(PROGNAME=progname,  VERSION=version)
 
-import os, sys, ast, argparse, platform
+deprecatedConfKeys = ['fetchInterval', 'monitorTables']
 
-from qqbot.utf8logger import SetLogLevel, INFO, RAWINPUT, PRINT
-from qqbot.common import STR2BYTES, BYTES2STR, PY3
+import os, sys, ast, argparse, platform, time, pkgutil
+
+from qqbot.utf8logger import SetLogLevel, INFO, RAWINPUT, PRINT, ERROR
+from qqbot.common import STR2BYTES, BYTES2STR, SYSTEMSTR2STR, STR2SYSTEMSTR
+from qqbot.common import daemonize, daemonable
 
 class ConfError(Exception):
     pass
 
 class QConf(object):
-    def __init__(self, qq=None, user=None):        
-        self.qq = None if qq is None else str(qq)
-        self.user = None if user is None else str(user)
+    def __init__(self, argv=None):
         self.version = version
-        self.readCmdLine()
+        self.readCmdLine(argv)
         self.readConfFile()
+        self.configure()
     
-    def readCmdLine(self):
+    def readCmdLine(self, argv):
+        if argv is None:
+            argv = sys.argv[1:]
+
         parser = argparse.ArgumentParser(add_help=False)
 
         parser.add_argument('-h', '--help', action='store_true')
 
-        parser.add_argument('-u', '--user')        
+        parser.add_argument('-u', '--user')
 
-        parser.add_argument('-q', '--qq')        
+        parser.add_argument('-q', '--qq')
+
+        parser.add_argument('-b', '--bench')
 
         parser.add_argument('-p', '--termServerPort', type=int)
 
@@ -227,24 +242,24 @@ class QConf(object):
         parser.add_argument('-nd', '--nodebug', action='store_true')        
 
         parser.add_argument('-r', '--restartOnOffline',
-                            action='store_true', default=None)        
+                            action='store_true', default=None)
 
-        parser.add_argument('-nr', '--norestart',
-                            action='store_true')
+        parser.add_argument('-nr', '--norestart', action='store_true') 
 
-        parser.add_argument('-fi', '--fetchInterval', type=int)
+        parser.add_argument('-dm', '--daemon',
+                            action='store_true', default=None)
+
+        parser.add_argument('-ndm', '--nodaemon', action='store_true')
 
         parser.add_argument('-saf', '--startAfterFetch',
-                            action='store_true', default=None)    
+                            action='store_true', default=None)
 
-        parser.add_argument('-mt', '--monitorTables')    
-
-        parser.add_argument('-pp', '--pluginPath')    
+        parser.add_argument('-pp', '--pluginPath')
 
         parser.add_argument('-pl', '--plugins')
 
         try:
-            opts = parser.parse_args()
+            opts = parser.parse_args(argv)
         except:
             PRINT(usage)
             sys.exit(1)            
@@ -258,21 +273,35 @@ class QConf(object):
         
         if opts.norestart:
             opts.restartOnOffline = False
+
+        if opts.nodaemon:
+            opts.daemon = False
         
         delattr(opts, 'nodebug')
         delattr(opts, 'norestart')
+        delattr(opts, 'nodaemon')
         
-        if opts.monitorTables:
-            s = opts.monitorTables
-            if not PY3:
-                s = s.decode(sys.getfilesystemencoding()).encode('utf8')
-            opts.monitorTables = s.split(',')
+        if not opts.bench:
+            opts.bench = os.path.join(os.path.expanduser('~'), '.qqbot-tmp')
+        
+        opts.bench = os.path.abspath(opts.bench)        
+        opts.benchstr = SYSTEMSTR2STR(opts.bench)
+
+        if not os.path.exists(opts.bench):
+            try:
+                os.mkdir(opts.bench)
+            except Exception as e:
+                PRINT('无法创建工作目录 %s ， %s' % (opts.benchstr, e))
+                sys.exit(1)
+        elif not os.path.isdir(opts.bench):
+            PRINT('无法创建工作目录 %s ' % opts.benchstr)
+            sys.exit(1)
         
         if opts.plugins:
-            s = opts.plugins
-            if not PY3:
-                s = s.decode(sys.getfilesystemencoding()).encode('utf8')
-            opts.plugins = s.split(',')
+            opts.plugins = SYSTEMSTR2STR(opts.plugins).split(',')
+        
+        if opts.pluginPath:
+            opts.pluginPath = SYSTEMSTR2STR(opts.pluginPath)
         
         for k, v in list(opts.__dict__.items()):
             if getattr(self, k, None) is None:
@@ -280,6 +309,7 @@ class QConf(object):
 
     def readConfFile(self):
         confPath = self.ConfPath()
+        strConfPath = SYSTEMSTR2STR(confPath)
         conf = rootConf.copy()
 
         if os.path.exists(confPath):
@@ -305,7 +335,9 @@ class QConf(object):
                     
                 for name in names:
                     for k, v in list(cusConf.get(name, {}).items()):
-                        if k not in conf:
+                        if k in deprecatedConfKeys:
+                            PRINT('被废弃的配置选项 %s ，将忽略此选项' % k)
+                        elif k not in conf:
                             raise ConfError('不存在的配置选项 %s.%s ' % (name, k))                               
                         elif type(v) is not type(conf[k]):
                             t = type(conf[k]).__name__
@@ -314,18 +346,18 @@ class QConf(object):
                             conf[k] = v
                             
             except (IOError, SyntaxError, ValueError, ConfError) as e:
-                PRINT('配置文件 %s 错误: %s\n' % (confPath, e), end='')
+                PRINT('配置文件 %s 错误: %s\n' % (strConfPath, e), end='')
                 sys.exit(1)
         
         else:
-            PRINT('未找到配置文件“%s”，将使用默认配置' % confPath)
+            PRINT('未找到配置文件“%s”，将使用默认配置' % strConfPath)
             try:
                 with open(confPath, 'wb') as f:
                     f.write(STR2BYTES(sampleConfStr))
             except IOError:
                 pass
             else:
-                PRINT('已创建一个默认配置文件“%s”' % confPath)
+                PRINT('已创建一个默认配置文件“%s”' % strConfPath)
             
             if self.user is not None:
                 PRINT('用户 %s 不存在\n' % self.user, end='')
@@ -335,9 +367,9 @@ class QConf(object):
             if getattr(self, k, None) is None:
                 setattr(self, k, v)
 
-        if self.pluginPath and not os.path.isdir(self.pluginPath):
+        if self.pluginPath and not os.path.isdir(STR2SYSTEMSTR(self.pluginPath)):
             PRINT('配置文件 %s 错误: 插件目录 “%s” 不存在\n' % \
-                  (confPath, self.pluginPath), end='')
+                  (strConfPath, self.pluginPath), end='')
             sys.exit(1)
         
         if self.mailAccount and not self.mailAuthCode:
@@ -354,45 +386,62 @@ class QConf(object):
                 sys.exit(1)
                 
     def configure(self):
+        p = self.absPath('plugins')
+        if not os.path.exists(p):
+            try:
+                os.mkdir(p)
+            except:
+                pass
+
+        if os.path.isdir(p):
+            if p not in sys.path:
+                sys.path.insert(0, p)
+            self.pluginPath1 = SYSTEMSTR2STR(p)
+        else:
+            self.pluginPath1 = None
+
         if self.pluginPath:
-            self.pluginPath = os.path.abspath(self.pluginPath)
-            if self.pluginPath not in sys.path:
-                sys.path.insert(0, self.pluginPath)
-                
-        if 0 <= self.fetchInterval < 60:
-            self.fetchInterval = 60
+            p = os.path.abspath(STR2SYSTEMSTR(self.pluginPath))
+            if p not in sys.path:
+                sys.path.insert(0, p)
+            self.pluginPath = SYSTEMSTR2STR(p)
+
+        try:
+            import qqbotdefault as q
+        except ImportError:
+            pass
+        else:        
+            for x,name,y in pkgutil.iter_modules(q.__path__, q.__name__+'.'):
+                self.plugins.append(name)
 
         SetLogLevel(self.debug and 'DEBUG' or 'INFO')
 
     def Display(self):
-        self.configure()
         INFO('QQBot-%s', self.version)
         INFO('Python %s', platform.python_version())
-        INFO('配置完成')
-        INFO('用户名： %s', self.user or '无')
+        INFO('工作目录：%s', self.benchstr)
+        INFO('配置文件：%s', SYSTEMSTR2STR(self.ConfPath()))
+        INFO('用户名：%s', self.user or '无')
         INFO('登录方式：%s', self.qq and ('自动（qq=%s）' % self.qq) or '手动')        
-        INFO('命令行服务器端口号：%s', self.termServerPort)       
-        INFO('HTTP 服务器 ip ：%s', self.httpServerIP or '无')       
-        INFO('HTTP 服务器端口号：%s',
+        INFO('命令行服务器端口号：%s', self.termServerPort or '无')
+        INFO('二维码服务器 ip ：%s', self.httpServerIP or '无')
+        INFO('二维码服务器端口号：%s',
              self.httpServerIP and self.httpServerPort or '无')
         INFO('用于接收二维码的邮箱账号：%s', self.mailAccount or '无')
         INFO('邮箱服务授权码：%s', self.mailAccount and '******' or '无')
         INFO('以文本模式显示二维码：%s', self.cmdQrcode and '是' or '否')
         INFO('调试模式：%s', self.debug and '开启' or '关闭')
         INFO('掉线后自动重启：%s', self.restartOnOffline and '是' or '否')
-        INFO('每轮联系人列表刷新之间的间歇时间：%d 秒', self.fetchInterval)
+        INFO('后台模式（daemon 模式）：%s', self.daemon and '是' or '否')
         INFO('启动方式：%s',
              self.startAfterFetch and '慢启动（联系人列表获取完成后再启动）'
                                    or '快速启动（登录成功后立即启动）')
-        INFO('需要被特别监视的联系人列表：%s', ', '.join(self.monitorTables) or '无')
-        INFO('插件目录：%s', self.pluginPath or '无')
+        self.pluginPath and INFO('插件目录0：%s', self.pluginPath)
+        self.pluginPath1 and INFO('插件目录1：%s', self.pluginPath1)
         INFO('启动时需要加载的插件：%s', self.plugins)
-    
-    tmpDir = os.path.join(os.path.expanduser('~'), '.qqbot-tmp')
-    
-    @classmethod
-    def absPath(cls, rela):
-        return os.path.join(cls.tmpDir, rela)
+
+    def absPath(self, rela):
+        return os.path.join(self.bench, rela)
 
     def ConfPath(self):
         return self.absPath('%s.conf' % self.version[:4])
@@ -400,17 +449,59 @@ class QConf(object):
     def PicklePath(self):
         return self.absPath(
             '%s-py%s-%s.pickle' %
-            (self.version[:4], platform.python_version(), self.qq)
+            (self.version[:4], sys.version_info.major, self.qq)
         )
-    
-    @classmethod
-    def QrcodePath(cls, qrcodeId):
-        return cls.absPath(qrcodeId+'.png')
 
-if not os.path.exists(QConf.tmpDir):
-    os.mkdir(QConf.tmpDir)
+    def QrcodePath(self, qrcodeId):
+        return self.absPath(qrcodeId+'.png')
+    
+    def SetQQ(self, qq):
+        self.qq = qq
+    
+    def StoreQQ(self):
+        if not self.qq:
+            return
+
+        try:
+            fn = self.absPath('qq(pid%s)' % os.getppid())
+            with open(fn, 'w') as f:
+                f.write(self.qq)
+        except Exception as e:
+            ERROR('无法保存当前 QQ 号码, %s', e)
+    
+    def LoadQQ(self):
+        time.sleep(0.5)
+        fn = self.absPath('qq(pid%s)' % os.getpid())
+        
+        if not os.path.exists(fn):
+            return self.qq
+
+        try:
+            with open(fn, 'r') as f:
+                qq = f.read()
+        except Exception as e:
+            ERROR('无法读取上次运行的 QQ 号码, %s', e)
+            qq = self.qq
+        else:
+            self.qq = qq
+            
+        try:
+            os.remove(fn)
+        except OSError:
+            pass
+
+        return qq
+    
+    def Daemonize(self):
+        if daemonable:
+            logfile = self.absPath('daemon-%s.log' % self.qq)
+            PRINT('将以 daemon 模式运行， log 文件： %s' % logfile)
+            daemonize(logfile)
+        else:
+            PRINT('错误：无法以 daemon 模式运行')
+            sys.exit(1)
 
 if __name__ == '__main__':
-    QConf().Display()
+    # QConf().Display()
     # print('')
-    # QConf(user='somebody').Display()
+    QConf(['-u', 'somebody', '-q', 'xxx', '--daemon']).Display()

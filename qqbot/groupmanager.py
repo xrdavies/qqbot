@@ -19,46 +19,32 @@ def isdigit(s):
     return isinstance(s, str) and s.isdigit()
 
 class GroupManagerSession(object):
-
-    # def GroupInvite(self, groupqq, qqlist):
-    #     assert isdigit(groupqq)
-    #     assert all(map(isdigit, qqlist))
-    #     self.smartRequest(
-    #         url = 'http://qun.qq.com/cgi-bin/qun_mgr/add_group_member',
-    #         Referer = 'http://qun.qq.com/member.html',
-    #         data = {'gc':groupqq,'ul':'|'.join(qqlist),'bkn':str(self.bkn)},
-    #         expectedCodes = (0,),
-    #         repeatOnDeny = 5
-    #     )
     
     def GroupKick(self, groupqq, qqlist, placehold=None):
-        assert isdigit(groupqq)
-        assert all(map(isdigit, qqlist)) and qqlist
-        return map(str, self.smartRequest(
-            url='http://qun.qq.com/cgi-bin/qun_mgr/delete_group_member',
-            Referer='http://qun.qq.com/member.html',
-            data={'gc':groupqq,'ul':'|'.join(qqlist),'flag':0,'bkn':self.bkn},
-            expectedCodes=(0,),
+        r = self.smartRequest(
+            url = 'http://qinfo.clt.qq.com/cgi-bin/qun_info/delete_group_member',
+            Referer = 'http://qinfo.clt.qq.com/member.html',
+            data={'gc': groupqq, 'ul': '|'.join(qqlist), 'bkn': self.bkn},
+            expectedCodes=(0,3,11),
             repeatOnDeny=5
-        ).get('ul', []))    
+        )
+        # 新接口不再区分多个用户的踢出状态，多个用户要么全部操作成功，要么全部失败
+        return r.get('ec', -1) == 0
+
     
     def GroupSetAdmin(self, groupqq, qqlist, admin=True):
-        assert isdigit(groupqq)
-        assert all(map(isdigit, qqlist)) and qqlist
-        self.smartRequest(
-            url = 'http://qun.qq.com/cgi-bin/qun_mgr/set_group_admin',
-            Referer = 'http://qun.qq.com/member.html',
-            data = {'gc':groupqq, 'ul':'|'.join(qqlist),
+        # 新接口只支持设置一人，不支持批量操作
+        r = self.smartRequest(
+            url = 'http://qinfo.clt.qq.com/cgi-bin/qun_info/set_group_admin',
+            Referer= 'http://qinfo.clt.qq.com/member.html',
+            data = {'src':'qinfo_v2', 'gc':groupqq, 'u':qqlist[0],
                     'op':int(admin), 'bkn':self.bkn},
-            expectedCodes = (0,14),
+            expectedCodes = (0, 14),
             repeatOnDeny = 6
         )
-        return qqlist
+        return r.get('ec', -1) == 0
 
     def GroupShut(self, groupqq, qqlist, t):
-        assert isdigit(groupqq)
-        assert all(map(isdigit, qqlist)) and qqlist
-        assert isinstance(t, int) and t >=60
         shutlist = JsonDumps([{'uin':int(qq), 't':t} for qq in qqlist])
         self.smartRequest(
             url = 'http://qinfo.clt.qq.com/cgi-bin/qun_info/set_group_shutup',
@@ -67,30 +53,38 @@ class GroupManagerSession(object):
             expectedCodes = (0,),
             repeatOnDeny = 5
         )
-        return qqlist
+        return True
 
     def GroupSetCard(self, groupqq, qqlist, card):
-        assert isdigit(groupqq)
-        assert all(map(isdigit, qqlist)) and qqlist
-        assert isinstance(card, str)
         self.smartRequest(
-            url = 'http://qun.qq.com/cgi-bin/qun_mgr/set_group_card',
-            Referer = 'http://qun.qq.com/member.html',
+            url = 'http://qinfo.clt.qq.com/cgi-bin/qun_info/set_group_card',
+            Referer='http://qinfo.clt.qq.com/member.html',
             data = {'gc': groupqq, 'bkn': self.bkn, 'u':qqlist[0], 'name':card}
-                   if card else {'gc': groupqq, 'bkn': self.bkn, 'u':qqlist[0]}, 
+                   if card else {'gc': groupqq, 'bkn': self.bkn, 'u':qqlist[0]},
             expectedCodes = (0,),
             repeatOnDeny = 5
         )
-        return qqlist
+        return True
 
 class GroupManager(object):
     
     def membsOperation(self, group, membs, tag, func, exArg):
         if not membs:
-            result = []
+            return []
+        
+        err = False
+        if group.qq == '#NULL':
+            err = True
+        
+        for m in membs:
+            if m.qq == '#NULL':
+                err = True
+        
+        if err:
+            return ['错误：群或某个成员的 qq 属性是 "#NULL"'] * len(membs)
 
         try:
-            kickedQQ = func(group.qq, [m.qq for m in membs], exArg)
+            ok = func(group.qq, [m.qq for m in membs], exArg)
         except RequestError:
             errInfo = '错误：' + tag + '失败（远程请求被拒绝）'
             result = [errInfo.format(m=str(m)) for m in membs]
@@ -99,35 +93,44 @@ class GroupManager(object):
             errInfo = '错误：' + tag + '失败（' + str(e) + '）'
             result = [errInfo.format(m=str(m)) for m in membs]
         else:
-            result = []
-            okInfo = '成功：' + tag
-            errInfo = '错误：' + tag + '失败（权限不够）'
-            for m in membs:
-                if m.qq in kickedQQ:
-                    result.append(okInfo.format(m=str(m)))
-                else:
-                    result.append(errInfo.format(m=str(m)))
-        
+            if ok:
+                okInfo = '成功：' + tag
+                result = [okInfo.format(m=str(m)) for m in membs]
+            else:
+                errInfo = '错误：' + tag + '失败（权限不够）'
+                result = [errInfo.format(m=str(m)) for m in membs]
+
         for r in result:
             INFO(r) if r.startswith('成功') else ERROR(r)
-        
+
         return result
     
     def GroupKick(self, group, membs):
         result = self.membsOperation(
             group, membs, ('踢除%s[{m}]' % group), self.groupKick, None
         )
-        for r,m in zip(result, membs):
+        for r, m in zip(result, membs):
             if r.startswith('成功'):
-                self.deleteMember(group, m, self)
+                self.Delete(group, m)
         return result
 
     def GroupSetAdmin(self, group, membs, admin=True):
-        return self.membsOperation(
-            group, membs,
+        result = [self.membsOperation(
+            group, [memb],
             '%s%s[{m}]为管理员' % ((admin and '设置' or '取消'), group),
             self.groupSetAdmin, admin
-        )
+        )[0] for memb in membs]
+        for r, m in zip(result, membs):
+            if r.startswith('成功'):
+                if admin:
+                    if m.role == '群主':
+                        role, role_id = '群主', 0
+                    else:
+                        role, role_id = '管理员', 1
+                else:
+                    role, role_id = '普通成员', 2
+                self.Modify(group, m, role=role, role_id=role_id)
+        return result
 
     def GroupShut(self, group, membs, t):
         return self.membsOperation(
@@ -142,7 +145,7 @@ class GroupManager(object):
             '设置%s[{m}]的群名片（=%s）' % (group, repr(card)),
             self.groupSetCard, card
         )[0] for memb in membs]
-        for r,m in zip(result, membs):
+        for r, m in zip(result, membs):
             if r.startswith('成功'):
-                self.setMemberCard(group, m, card)
+                self.Modify(group, m, card=card, name=(card or m.nick))
         return result

@@ -7,24 +7,38 @@ PY3 = sys.version_info[0] == 3
 JsonLoads = PY3 and json.loads or (lambda s: encJson(json.loads(s)))
 JsonDumps = json.dumps
 
-def STR2BYTES(s):
-    return s.encode('utf8') if PY3 else s
+_PASS = lambda s: s
 
-def BYTES2STR(b):
-    return b.decode('utf8') if PY3 else b
+if PY3:
+    STR2UNICODE = _PASS
+    UNICODE2STR = _PASS
 
-def BYTES2SYSTEMSTR(b):
-    return b.decode('utf8') if PY3 else \
-           b.decode('utf8').encode(sys.stdin.encoding)
+    STR2BYTES = lambda s: s.encode('utf8')
+    BYTES2STR = lambda s: s.decode('utf8')
 
-def STR2SYSTEMSTR(s):
-    return s if PY3 else s.decode('utf8').encode(sys.stdin.encoding)
+    STR2SYSTEMSTR = _PASS
+    SYSTEMSTR2STR = _PASS
 
-#def STRING_ESCAPE(s):
-#    if not PY3:
-#        return s.decode('string-escape')
-#    else:
-#        return s.encode('utf8').decode('unicode_escape')
+    SYSTEMSTR2BYTES = STR2BYTES
+    BYTES2SYSTEMSTR = BYTES2STR
+    
+else:
+    STR2UNICODE = lambda s: s.decode('utf8')
+    UNICODE2STR = lambda s: s.encode('utf8')
+
+    STR2BYTES = _PASS
+    BYTES2STR = _PASS
+    
+    _SYSENCODING = sys.getfilesystemencoding() or 'utf8'
+    if _SYSENCODING.lower() in ('utf8', 'utf_8', 'utf-8'):
+        STR2SYSTEMSTR = _PASS
+        SYSTEMSTR2STR = _PASS
+    else:
+        STR2SYSTEMSTR = lambda s: s.decode('utf8').encode(_SYSENCODING)
+        SYSTEMSTR2STR = lambda s: s.decode(_SYSENCODING).encode('utf8')
+    
+    BYTES2SYSTEMSTR = STR2SYSTEMSTR
+    SYSTEMSTR2BYTES = SYSTEMSTR2STR
 
 if not PY3:
     def encJson(obj):
@@ -36,32 +50,45 @@ if not PY3:
             return dict((encJson(k), encJson(v)) for k,v in obj.items())
         else:
             return obj
-    
-    def Partition(msg, n):
-        if n >= len(msg):
-            return msg, ''
-        else:
-            # All utf8 characters start with '0xxx-xxxx' or '11xx-xxxx'
-            while n > 0 and ord(msg[n]) >> 6 == 2:
-                n -= 1
-            return msg[:n], msg[n:]
-else:
-    def Partition(msg, n):
-        return msg[:n], msg[n:]
 
-#_p = re.compile(r'[0-9]+|[a-zA-Z][a-z]*')
-#
-#def SplitWords(s):
-#    return _p.findall(s)
-#
-#def MinusSeperate(s):
-#    return '-'.join(SplitWords(s)).lower()
+def isSpace(b):
+    return b in [' ', '\t', '\n', '\r', 32, 9, 10, 13]
+
+def Partition(msg):
+    if PY3:
+        msg = msg.encode('utf8')
+
+    n = 720
+
+    if len(msg) < n:
+        f, b = msg, b''
+    else:
+        for i in range(n-1, n-101, -1):
+            if isSpace(msg[i]):
+                f, b = msg[:i+1], msg[i+1:]
+                break
+        else:
+            for i in range(n-1, n-301, -1):
+                if PY3:
+                    x = msg[i]
+                else:
+                    x = ord(msg[i])
+                if (x >> 6) != 2:
+                    f, b = msg[:i], msg[i:]
+                    break
+            else:
+                f, b = msg[:n], msg[n:]
+    
+    if PY3:
+        return f.decode('utf8'), b.decode('utf8')
+    else:
+        return f, b
 
 def HasCommand(procName):
     return subprocess.call(['which', procName], stdout=subprocess.PIPE) == 0
 
-#def StartThread(target, *args, **kwargs):
-#    threading.Thread(target=target, args=args, kwargs=kwargs).start()
+def StartThread(target, *args, **kwargs):
+    threading.Thread(target=target, args=args, kwargs=kwargs).start()
 
 def StartDaemonThread(target, *args, **kwargs):
     t = threading.Thread(target=target, args=args, kwargs=kwargs)
@@ -152,12 +179,11 @@ def AutoTest():
 if not PY3:
     import HTMLParser; htmlUnescape = HTMLParser.HTMLParser().unescape
     def HTMLUnescape(s):
-        s = s.replace('&nbsp;', ' ')
-        return htmlUnescape(s.decode('utf8')).encode('utf8')
+        return htmlUnescape(s.decode('utf8')).replace(u'\xa0', u' ').encode('utf8')
 else:
     import html.parser; htmlUnescape = html.parser.HTMLParser().unescape
     def HTMLUnescape(s):
-        return htmlUnescape(s.replace('&nbsp;', ' '))
+        return htmlUnescape(s).replace('\xa0', ' ')
 
 def IsMainThread():
     return threading.current_thread().name == 'MainThread'
@@ -181,3 +207,150 @@ if not PY3:
 else:
     import urllib.parse
     Unquote = urllib.parse.unquote
+
+def mydump(fn, d):
+    with open(fn, 'wb') as f:
+        json.dump(d, f, ensure_ascii=False, indent=4)
+
+if PY3:
+    def UniIter(s):
+        return zip(map(ord, s), s)
+else:
+    # s: utf8 byte-string
+    def UniIter(s):
+        if not s:
+            return
+        
+        x, uchar = ord(s[0]), s[0]
+        for ch in s[1:]:
+            c = ord(ch)
+            if c >> 6 == 0b10:
+                x = (x << 6) | (c & 0b111111)
+                uchar += ch
+            else:
+                yield x, uchar
+                uchar = ch
+                if c >> 7 == 0:
+                    x = c
+                elif c >> 5 == 0b110:
+                    x = c & 0b11111
+                elif c >> 4 == 0b1110:
+                    x = c & 0b1111
+                elif c >> 3 == 0b11110:
+                    x = c & 0b111
+                else:
+                    raise Exception('illegal utf8 string')
+        yield x, uchar
+
+# http://pydev.blogspot.com/2013/01/python-get-parent-process-id-pid-in.html
+# Python: get parent process id (pid) in windows
+# Below is code to monkey-patch the os module to provide a getppid() function
+# to get the parent process id in windows using ctypes (note that on Python 3.2,
+# os.getppid() already works and is available on windows, but if you're on an
+# older version, this can be used as a workaround).
+import os
+
+if not hasattr(os, 'getppid'):
+    import ctypes
+
+    TH32CS_SNAPPROCESS = long(0x02) if not PY3 else int(0x02)
+    CreateToolhelp32Snapshot = ctypes.windll.kernel32.CreateToolhelp32Snapshot
+    GetCurrentProcessId = ctypes.windll.kernel32.GetCurrentProcessId
+
+    MAX_PATH = 260
+
+    _kernel32dll = ctypes.windll.Kernel32
+    CloseHandle = _kernel32dll.CloseHandle
+
+    class PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", ctypes.c_ulong),
+            ("cntUsage", ctypes.c_ulong),
+            ("th32ProcessID", ctypes.c_ulong),
+            ("th32DefaultHeapID", ctypes.c_int),
+            ("th32ModuleID", ctypes.c_ulong),
+            ("cntThreads", ctypes.c_ulong),
+            ("th32ParentProcessID", ctypes.c_ulong),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", ctypes.c_ulong),
+
+            ("szExeFile", ctypes.c_wchar * MAX_PATH)
+        ]
+
+    Process32First = _kernel32dll.Process32FirstW
+    Process32Next = _kernel32dll.Process32NextW
+
+    def getppid():
+        '''
+        :return: The pid of the parent of this process.
+        '''
+        pe = PROCESSENTRY32()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        mypid = GetCurrentProcessId()
+        snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+
+        result = 0
+        try:
+            have_record = Process32First(snapshot, ctypes.byref(pe))
+
+            while have_record:
+                if mypid == pe.th32ProcessID:
+                    result = pe.th32ParentProcessID
+                    break
+
+                have_record = Process32Next(snapshot, ctypes.byref(pe))
+
+        finally:
+            CloseHandle(snapshot)
+
+        return result
+
+    os.getppid = getppid
+
+daemonable = hasattr(os, 'fork')
+
+def daemonize(stdoutfile=None, stderrfile=None):
+    try:
+        pid = os.fork()
+        if pid > 0:
+            sys.exit(0)
+    except OSError:
+        print("fork error!!!")
+        sys.exit(1)
+
+    os.setsid()
+    
+    try:
+        pid = os.fork()
+        if pid > 0:
+            print("PID: %d" % pid)
+            sys.exit(0)
+    except OSError:
+        print("fork error!!!")
+        sys.exit(1)
+    
+    # os.chdir("/")
+    os.umask(0)    
+    
+#    dev_null = open("/dev/null", "r+")
+#    os.dup2(dev_null.fileno(), sys.stdout.fileno())
+#    os.dup2(dev_null.fileno(), sys.stderr.fileno())
+#    os.dup2(dev_null.fileno(), sys.stdin.fileno())
+
+    dev_null = open("/dev/null", "r+")
+
+    if stdoutfile:
+        stdout = open(stdoutfile, "w")
+    else:
+        stdout = dev_null
+    
+    if stderrfile:
+        stderr = open(stderrfile, "w")
+    else:
+        stderr = stdout
+    
+    stdin = dev_null
+
+    os.dup2(stdin.fileno(), sys.stdin.fileno())
+    os.dup2(stdout.fileno(), sys.stdout.fileno())
+    os.dup2(stderr.fileno(), sys.stderr.fileno())
